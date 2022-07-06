@@ -1,74 +1,69 @@
 package main;
 
-import java.io.BufferedOutputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import main.Util.FileUtil;
+import main.Util.HttpUtil;
+import main.Util.LogUtil;
+
+
+import java.io.*;
 import java.net.HttpURLConnection;
-import java.net.URL;
-import java.net.URLConnection;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
-public class SimpleDownloader implements Runnable{
-    private static BufferedOutputStream outStream;
-    private static InputStream inputStream;
-    private static String downloadFileUrl;
-    private static URLConnection urlConnection;
-    private static int fileSize;
-    private static String localFileFullPath;
-    private static final int bufferSize = 4096;
+public class SimpleDownloader {
+    public static final int BYTE_SIZE = 1024 * 100;
+    public ScheduledExecutorService scheduledExecutorService = Executors.newScheduledThreadPool(1);
 
+    public void download(String url) {
+        String httpFileName = HttpUtil.getHttpFileName(url);
+        String localPath = System.getProperty("user.home") + "\\Downloads\\" + httpFileName;
+        httpFileName = localPath; //full local file path
 
-    @Override
-    public void run() {
+        //get local downloaded file size
+        long localFileLength = FileUtil.getFileLength(httpFileName);
+
+        HttpURLConnection httpURLConnection = null;
+        ThreadDownloadInfo threadDownloadInfo = null;
         try {
-            URL url;
-            byte[] buf;
-            int byteRead, byteWritten = 0;
-            url = new URL(getFinalLocation(downloadFileUrl));
-            outStream = new BufferedOutputStream(new FileOutputStream(localFileFullPath));
+            httpURLConnection = HttpUtil.getHttpURLConnection(url);
+            int contentLength = httpURLConnection.getContentLength();
 
-            urlConnection = url.openConnection();
-            inputStream = urlConnection.getInputStream();
-            fileSize = urlConnection.getContentLength();
-
-            buf = new byte[bufferSize];
-            while ((byteRead = inputStream.read(buf)) != -1) {
-                outStream.write(buf, 0, byteRead);
-                byteWritten += byteRead;
-                //System.out.println((byteWritten/fileSize * 100.0) + "%");
-                System.out.println(byteWritten);
+            //check if file is already downloaded
+            if (localFileLength >= contentLength) {
+                LogUtil.info("[] is already downloaded", httpFileName);
+                return; //exit
             }
-        } catch (Exception e) {
+            threadDownloadInfo = new ThreadDownloadInfo(contentLength);
+            scheduledExecutorService.scheduleAtFixedRate(threadDownloadInfo, 1, 1, TimeUnit.SECONDS);
+        } catch (IOException e) {
             e.printStackTrace();
+        }
+
+        try (InputStream input = httpURLConnection.getInputStream();
+             BufferedInputStream bufferedInputStream = new BufferedInputStream(input);
+             FileOutputStream fileOutputStream = new FileOutputStream(httpFileName);
+             BufferedOutputStream bufferedOutputStream = new BufferedOutputStream(fileOutputStream);
+        ) {
+            int len = -1;
+            byte[] buffer = new byte[BYTE_SIZE];
+            while ((len = bufferedInputStream.read(buffer)) != -1) {
+                threadDownloadInfo.downsize += len;
+                bufferedOutputStream.write(buffer,0,len);
+            }
+        } catch (FileNotFoundException e) {
+            LogUtil.error("File is not found[]", url);
+        } catch (Exception e) {
+            LogUtil.error("Download failed");
         } finally {
-            try {
-                inputStream.close();
-                outStream.close();
-            } catch (IOException e) {
-                e.printStackTrace();
+            System.out.print("\r");
+            System.out.println("Download complete");
+            if (httpURLConnection != null) {
+                httpURLConnection.disconnect();
             }
+
+            scheduledExecutorService.shutdownNow();
         }
     }
 
-    //To get the final location of the file if the server redirect
-    public synchronized String getFinalLocation(String address) throws IOException {
-        URL url = new URL(address);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        int status = conn.getResponseCode();
-        if (status != HttpURLConnection.HTTP_OK) {
-            if (status == HttpURLConnection.HTTP_MOVED_TEMP || status == HttpURLConnection.HTTP_MOVED_PERM || status == HttpURLConnection.HTTP_SEE_OTHER) {
-                String newLocation = conn.getHeaderField("Location");
-                return getFinalLocation(newLocation);
-            }
-        }
-        return address;
-    }
-
-    public void setLocalFileFullPath(String localFileName) {
-        SimpleDownloader.localFileFullPath = localFileName;
-    }
-
-    public void setDownloadFileUrl(String fileAddress) {
-        SimpleDownloader.downloadFileUrl = fileAddress;
-    }
 }
